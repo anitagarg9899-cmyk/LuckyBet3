@@ -9,6 +9,9 @@ import hmac
 import secrets
 import re
 import math
+from dotenv import load_dotenv
+
+load_dotenv()
 from datetime import datetime, timezone, timedelta
 from images import (
     balance_card, coinflip_card, dice_card, slots_card,
