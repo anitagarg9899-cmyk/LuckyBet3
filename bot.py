@@ -15,7 +15,8 @@ load_dotenv()
 from datetime import datetime, timezone, timedelta
 from images import (
     balance_card, coinflip_card, dice_card, slots_card,
-    roulette_card, blackjack_card, addbal_card, limbo_card
+    roulette_card, blackjack_card, addbal_card, limbo_card,
+    rps_card, slide_card, tight_card, war_card, valentines_card, twist_card
 )
 
 intents = discord.Intents.default()
@@ -211,6 +212,75 @@ def pf_limbo(server_seed, client_seed):
     result = (1.0 - LIMBO_HOUSE_EDGE) / r
     return max(1.00, round(result, 2))
 
+RPS_CHOICES = ['rock', 'paper', 'scissors']
+
+def pf_rps(server_seed, client_seed):
+    """Bot's provably-fair Rock-Paper-Scissors move."""
+    return RPS_CHOICES[int(pf_derive(server_seed, client_seed) * 3) % 3]
+
+SLIDE_HOUSE_EDGE = 0.04
+SLIDE_MAX = 10.0
+
+def pf_slide(server_seed, client_seed):
+    """Slider lands on a multiplier; payout uses the player's target (1% style)."""
+    r = max(pf_derive(server_seed, client_seed), 1e-9)
+    result = (1.0 - SLIDE_HOUSE_EDGE) / r
+    return round(min(result, SLIDE_MAX), 2)
+
+TIGHT_MAX = 5.0
+TIGHT_EXP = 4.208   # tuned so E[result] ≈ 0.96 (96% RTP)
+
+def pf_tight(server_seed, client_seed):
+    """Random multiplier in [0, 5.0] skewed low for ~96% RTP."""
+    r = pf_derive(server_seed, client_seed)
+    return round(TIGHT_MAX * (r ** TIGHT_EXP), 2)
+
+def pf_war_cards(server_seed, client_seed):
+    """Return (player_rank, dealer_rank), ranks 2-14 (11=J,12=Q,13=K,14=A)."""
+    p = int(pf_derive(server_seed, client_seed, 0) * 13) + 2
+    d = int(pf_derive(server_seed, client_seed, 1) * 13) + 2
+    return p, d
+
+VALENTINE_SYMBOLS = ['💘', '💖', '💝', '🌹', '🍫', '💍']
+
+def pf_valentines(server_seed, client_seed):
+    return [VALENTINE_SYMBOLS[int(pf_derive(server_seed, client_seed, i) * 6) % 6] for i in range(3)]
+
+TWIST_TRACK = {
+    3: 5.0, 4: 3.0, 5: 2.0, 6: 1.5, 7: 1.0, 8: 0.5, 9: 0.3, 10: 0.2,
+    11: 0.2, 12: 0.5, 13: 1.0, 14: 1.5, 15: 2.0, 16: 3.0, 17: 5.0, 18: 9.5,
+}
+
+def pf_twist(server_seed, client_seed):
+    """Three dice rolls; token moves sum(rolls) tiles. Returns (rolls, multiplier)."""
+    rolls = [int(pf_derive(server_seed, client_seed, i) * 6) + 1 for i in range(3)]
+    return rolls, TWIST_TRACK[sum(rolls)]
+
+TREASURE_MAX = 2.5
+TREASURE_EXP = 1.604   # tuned so E[multiplier] ≈ 0.96 (96% RTP)
+
+def pf_treasure(server_seed, client_seed, num_chests):
+    """Return a multiplier (0..2.5, skewed low) for each chest."""
+    return [round(TREASURE_MAX * (pf_derive(server_seed, client_seed, i) ** TREASURE_EXP), 2)
+            for i in range(num_chests)]
+
+# Tower: difficulty -> (tiles per row, safe tiles per row)
+TOWER_DIFFS = {'easy': (4, 3), 'medium': (3, 2), 'hard': (2, 1)}
+TOWER_ROWS = 6
+TOWER_EDGE = 0.03
+
+def tower_step_mult(diff):
+    tiles, safe = TOWER_DIFFS[diff]
+    return (tiles / safe) * (1 - TOWER_EDGE)
+
+def tower_multiplier(diff, rows_cleared):
+    return round(tower_step_mult(diff) ** rows_cleared, 2)
+
+def pf_tower_bombs(server_seed, client_seed, diff):
+    """Return list (len TOWER_ROWS) of the bomb tile index for each row."""
+    tiles, _ = TOWER_DIFFS[diff]
+    return [int(pf_derive(server_seed, client_seed, r) * tiles) % tiles for r in range(TOWER_ROWS)]
+
 def pf_blackjack_deck(server_seed, client_seed):
     deck = [2,3,4,5,6,7,8,9,10,10,10,10,11] * 4
     full_bytes = b''
@@ -239,7 +309,8 @@ def pf_add_field(embed, server_seed, client_seed, public_hash, game):
 GAME_EMOJIS = {
     'coinflip': '🪙', 'dice': '🎲', 'slots': '🎰', 'roulette': '🎡',
     'blackjack': '🃏', 'mines': '⛏️', 'crash': '🚀', 'jackpot': '🎰',
-    'limbo': '📈',
+    'limbo': '📈', 'rps': '✂️', 'slide': '🎢', 'tight': '🗜️', 'tower': '🗼',
+    'treasurehunt': '💰', 'twist': '🌀', 'valentines': '💘', 'war': '⚔️',
 }
 
 async def send_to_history(guild, game, user_name, user_id, bet, won, profit, new_bal):
@@ -1003,6 +1074,511 @@ async def limbo(ctx, amount: str, target: str = None):
     asyncio.create_task(send_to_history(ctx.guild, 'limbo', ctx.author.name, ctx.author.id, amount, won, profit if won else amount, new_bal))
 
 
+@bot.command(name='rps')
+async def rps(ctx, amount: str, choice: str = None):
+    bal = get_user_balance(ctx.author.id)
+    if choice is None:
+        await ctx.send("❌ Usage: `.rps <amount> <rock/paper/scissors>` (or r/p/s)"); return
+    cmap = {'r': 'rock', 'p': 'paper', 's': 'scissors', 'rock': 'rock', 'paper': 'paper', 'scissors': 'scissors'}
+    player = cmap.get(choice.lower())
+    if player is None:
+        await ctx.send("❌ Choose **rock**, **paper**, or **scissors** (r/p/s)!"); return
+    amount = resolve_bet(amount, bal)
+    if amount is None: await ctx.send("❌ Invalid amount! Use a number, `all`, or `half`."); return
+    if amount <= 0: await ctx.send("❌ Bet must be positive!"); return
+    if amount > bal: await ctx.send(f"❌ Insufficient balance! You have {fmt(bal)}"); return
+    server_seed, client_seed, public_hash = generate_seeds()
+    bot_move = pf_rps(server_seed, client_seed)
+    EMO = {'rock': '🪨', 'paper': '📄', 'scissors': '✂️'}
+    embed = discord.Embed(title="✂️  Rock · Paper · Scissors", description="Rock... Paper... Scissors...", color=0xFFD700)
+    msg = await ctx.send(embed=embed)
+    for f in ("🪨", "📄", "✂️"):
+        await asyncio.sleep(0.4); embed.description = f"Shoot!  {f}"; await msg.edit(embed=embed)
+    await asyncio.sleep(0.3)
+    beats = {'rock': 'scissors', 'paper': 'rock', 'scissors': 'paper'}
+    if player == bot_move: outcome = 'tie'
+    elif beats[player] == bot_move: outcome = 'win'
+    else: outcome = 'lose'
+    won = True if outcome == 'win' else (False if outcome == 'lose' else None)
+    new_bal = bal + amount if outcome == 'win' else (bal - amount if outcome == 'lose' else bal)
+    if outcome != 'tie':
+        add_to_stats(ctx.author.id, won, amount); set_user_balance(ctx.author.id, new_bal)
+        if ctx.guild: asyncio.create_task(assign_rank_role(ctx.guild, ctx.author.id))
+    title = "🎉 RPS — YOU WON! (×2)" if outcome == 'win' else ("😢 RPS — YOU LOST" if outcome == 'lose' else "🤝 RPS — TIE (push)")
+    color = 0x00FF88 if outcome == 'win' else (0xFF4444 if outcome == 'lose' else 0xFFD700)
+    embed = discord.Embed(title=title, color=color)
+    embed.add_field(name="You", value=f"{EMO[player]} {player.title()}", inline=True)
+    embed.add_field(name="Bot", value=f"{EMO[bot_move]} {bot_move.title()}", inline=True)
+    embed.add_field(name="Change", value="±R$0" if outcome == 'tie' else f"{'+' if won else '-'}R${amount:,}", inline=True)
+    embed.add_field(name="New Balance", value=fmt(new_bal), inline=False)
+    pf_add_field(embed, server_seed, client_seed, public_hash, "rps")
+    img_buf = rps_card(ctx.author.name, player, bot_move, outcome)
+    embed.set_image(url="attachment://rps.png")
+    await msg.edit(embed=embed, attachments=[send_image(img_buf, 'rps.png')])
+    asyncio.create_task(send_to_history(ctx.guild, 'rps', ctx.author.name, ctx.author.id, amount, won, amount if outcome != 'tie' else 0, new_bal))
+
+
+@bot.command(name='slide')
+async def slide(ctx, amount: str, target: str = None):
+    bal = get_user_balance(ctx.author.id)
+    if target is None:
+        await ctx.send("❌ Usage: `.slide <amount> <target>` — pick 1.10×–10.0×, e.g. `.slide 100 2.0`"); return
+    try:
+        target_mult = round(float(target.lower().replace('x', '').strip()), 2)
+    except ValueError:
+        await ctx.send("❌ Invalid target! Provide a multiplier like `2.0` or `5x`."); return
+    if target_mult < 1.10 or target_mult > SLIDE_MAX:
+        await ctx.send(f"❌ Target must be between 1.10× and {SLIDE_MAX:g}×!"); return
+    amount = resolve_bet(amount, bal)
+    if amount is None: await ctx.send("❌ Invalid amount! Use a number, `all`, or `half`."); return
+    if amount <= 0: await ctx.send("❌ Bet must be positive!"); return
+    if amount > bal: await ctx.send(f"❌ Insufficient balance! You have {fmt(bal)}"); return
+    server_seed, client_seed, public_hash = generate_seeds()
+    result_mult = pf_slide(server_seed, client_seed)
+    embed = discord.Embed(title="🎢  Slide", description="🎢 Sliding...", color=0xFFD700)
+    msg = await ctx.send(embed=embed)
+    for step in (result_mult * 0.5, result_mult * 0.85, result_mult):
+        await asyncio.sleep(0.4); embed.description = f"🎢 `{step:.2f}×`  Sliding..."; await msg.edit(embed=embed)
+    await asyncio.sleep(0.3)
+    won = result_mult >= target_mult
+    profit = round(amount * target_mult) - amount if won else amount
+    new_bal = bal + profit if won else bal - amount
+    add_to_stats(ctx.author.id, won, amount); set_user_balance(ctx.author.id, new_bal)
+    if ctx.guild: asyncio.create_task(assign_rank_role(ctx.guild, ctx.author.id))
+    embed = discord.Embed(title=f"🎉 Slide — WIN! (×{target_mult:g})" if won else "😢 Slide — LOST", color=0x00FF88 if won else 0xFF4444)
+    embed.add_field(name="Your target", value=f"{target_mult:.2f}×", inline=True)
+    embed.add_field(name="Landed on",   value=f"{result_mult:.2f}×", inline=True)
+    embed.add_field(name="Change",      value=f"{'+' if won else '-'}R${(profit if won else amount):,}", inline=True)
+    embed.add_field(name="New Balance", value=fmt(new_bal), inline=False)
+    pf_add_field(embed, server_seed, client_seed, public_hash, "slide")
+    img_buf = slide_card(ctx.author.name, target_mult, result_mult, won)
+    embed.set_image(url="attachment://slide.png")
+    await msg.edit(embed=embed, attachments=[send_image(img_buf, 'slide.png')])
+    asyncio.create_task(send_to_history(ctx.guild, 'slide', ctx.author.name, ctx.author.id, amount, won, profit if won else amount, new_bal))
+
+
+@bot.command(name='tight')
+async def tight(ctx, amount: str):
+    bal = get_user_balance(ctx.author.id)
+    amount = resolve_bet(amount, bal)
+    if amount is None: await ctx.send("❌ Invalid amount! Use a number, `all`, or `half`."); return
+    if amount <= 0: await ctx.send("❌ Bet must be positive!"); return
+    if amount > bal: await ctx.send(f"❌ Insufficient balance! You have {fmt(bal)}"); return
+    server_seed, client_seed, public_hash = generate_seeds()
+    result_mult = pf_tight(server_seed, client_seed)
+    embed = discord.Embed(title="🗜️  Tight", description="🗜️ Tightening...", color=0xFFD700)
+    msg = await ctx.send(embed=embed)
+    for step in (result_mult * 0.4, result_mult * 0.8, result_mult):
+        await asyncio.sleep(0.4); embed.description = f"🗜️ `{step:.2f}×`  Tightening..."; await msg.edit(embed=embed)
+    await asyncio.sleep(0.3)
+    payout = round(amount * result_mult)
+    won = payout >= amount
+    profit = payout - amount
+    new_bal = bal - amount + payout
+    add_to_stats(ctx.author.id, won, amount); set_user_balance(ctx.author.id, new_bal)
+    if ctx.guild: asyncio.create_task(assign_rank_role(ctx.guild, ctx.author.id))
+    embed = discord.Embed(title=f"🎉 Tight — {result_mult:.2f}× PROFIT!" if won else f"😢 Tight — {result_mult:.2f}× (loss)", color=0x00FF88 if won else 0xFF4444)
+    embed.add_field(name="Multiplier", value=f"{result_mult:.2f}×", inline=True)
+    embed.add_field(name="Payout",     value=fmt(payout), inline=True)
+    embed.add_field(name="Change",     value=f"{'+' if profit >= 0 else '-'}R${abs(profit):,}", inline=True)
+    embed.add_field(name="New Balance", value=fmt(new_bal), inline=False)
+    pf_add_field(embed, server_seed, client_seed, public_hash, "tight")
+    img_buf = tight_card(ctx.author.name, result_mult, won)
+    embed.set_image(url="attachment://tight.png")
+    await msg.edit(embed=embed, attachments=[send_image(img_buf, 'tight.png')])
+    asyncio.create_task(send_to_history(ctx.guild, 'tight', ctx.author.name, ctx.author.id, amount, won, profit if won else (amount - payout), new_bal))
+
+
+@bot.command(name='war')
+async def war(ctx, amount: str):
+    bal = get_user_balance(ctx.author.id)
+    amount = resolve_bet(amount, bal)
+    if amount is None: await ctx.send("❌ Invalid amount! Use a number, `all`, or `half`."); return
+    if amount <= 0: await ctx.send("❌ Bet must be positive!"); return
+    if amount > bal: await ctx.send(f"❌ Insufficient balance! You have {fmt(bal)}"); return
+    server_seed, client_seed, public_hash = generate_seeds()
+    p, dealer = pf_war_cards(server_seed, client_seed)
+    RANK_NAMES = {11: 'J', 12: 'Q', 13: 'K', 14: 'A'}
+    def cname(r): return RANK_NAMES.get(r, str(r))
+    embed = discord.Embed(title="⚔️  War", description="⚔️ Drawing cards...", color=0xFFD700)
+    msg = await ctx.send(embed=embed)
+    await asyncio.sleep(0.6); embed.description = f"You draw **{cname(p)}**..."; await msg.edit(embed=embed)
+    await asyncio.sleep(0.6)
+    if p > dealer: outcome = 'win'
+    elif p < dealer: outcome = 'lose'
+    else: outcome = 'tie'
+    won = True if outcome == 'win' else (False if outcome == 'lose' else None)
+    new_bal = bal + amount if outcome == 'win' else (bal - amount if outcome == 'lose' else bal)
+    if outcome != 'tie':
+        add_to_stats(ctx.author.id, won, amount); set_user_balance(ctx.author.id, new_bal)
+        if ctx.guild: asyncio.create_task(assign_rank_role(ctx.guild, ctx.author.id))
+    title = "🎉 War — YOU WON! (×2)" if outcome == 'win' else ("😢 War — DEALER WINS" if outcome == 'lose' else "🤝 War — TIE (push)")
+    color = 0x00FF88 if outcome == 'win' else (0xFF4444 if outcome == 'lose' else 0xFFD700)
+    embed = discord.Embed(title=title, color=color)
+    embed.add_field(name="Your card",   value=f"**{cname(p)}**", inline=True)
+    embed.add_field(name="Dealer card", value=f"**{cname(dealer)}**", inline=True)
+    embed.add_field(name="Change", value="±R$0" if outcome == 'tie' else f"{'+' if won else '-'}R${amount:,}", inline=True)
+    embed.add_field(name="New Balance", value=fmt(new_bal), inline=False)
+    pf_add_field(embed, server_seed, client_seed, public_hash, "war")
+    img_buf = war_card(ctx.author.name, p, dealer, outcome)
+    embed.set_image(url="attachment://war.png")
+    await msg.edit(embed=embed, attachments=[send_image(img_buf, 'war.png')])
+    asyncio.create_task(send_to_history(ctx.guild, 'war', ctx.author.name, ctx.author.id, amount, won, amount if outcome != 'tie' else 0, new_bal))
+
+
+@bot.command(name='valentines')
+async def valentines(ctx, amount: str):
+    bal = get_user_balance(ctx.author.id)
+    amount = resolve_bet(amount, bal)
+    if amount is None: await ctx.send("❌ Invalid amount! Use a number, `all`, or `half`."); return
+    if amount <= 0: await ctx.send("❌ Bet must be positive!"); return
+    if amount > bal: await ctx.send(f"❌ Insufficient balance! You have {fmt(bal)}"); return
+    server_seed, client_seed, public_hash = generate_seeds()
+    final = pf_valentines(server_seed, client_seed)
+    SPIN = "💞"; RING = "💍"
+    def disp(r1, r2, r3): return f"┌─────────────┐\n│  {r1}  {r2}  {r3}  │\n└─────────────┘"
+    embed = discord.Embed(title="💘  Valentine's Slots", color=0xFF6FA5)
+    embed.description = f"```\n{disp(SPIN, SPIN, SPIN)}\n```\nSpinning with love..."
+    msg = await ctx.send(embed=embed)
+    for step in range(1, 4):
+        await asyncio.sleep(0.6); rv = [final[i] for i in range(step)]; pv = [SPIN] * (3 - step)
+        embed.description = f"```\n{disp(*(rv + pv))}\n```"; await msg.edit(embed=embed)
+    await asyncio.sleep(0.4)
+    r1, r2, r3 = final
+    if r1 == r2 == r3:
+        winnings = amount * (100 if r1 == RING else 10); won = True
+        label = "💍 JACKPOT ×100" if r1 == RING else "💞 Triple ×10"
+    elif r1 == r2 or r2 == r3:
+        winnings = amount * 2; won = True; label = "Pair ×2"
+    else:
+        winnings = 0; won = False; label = "No match"
+    new_bal = bal + winnings if won else bal - amount
+    add_to_stats(ctx.author.id, won, amount); set_user_balance(ctx.author.id, new_bal)
+    if ctx.guild: asyncio.create_task(assign_rank_role(ctx.guild, ctx.author.id))
+    embed = discord.Embed(title=f"🎉 Valentine's — {label}" if won else "😢 Valentine's — No Match", color=0x00FF88 if won else 0xFF4444)
+    embed.description = f"```\n{disp(r1, r2, r3)}\n```"
+    embed.add_field(name="Won" if won else "Lost", value=fmt(winnings if won else amount), inline=True)
+    embed.add_field(name="New Balance", value=fmt(new_bal), inline=True)
+    pf_add_field(embed, server_seed, client_seed, public_hash, "valentines")
+    img_buf = valentines_card(ctx.author.name, final, won, label)
+    embed.set_image(url="attachment://valentines.png")
+    await msg.edit(embed=embed, attachments=[send_image(img_buf, 'valentines.png')])
+    asyncio.create_task(send_to_history(ctx.guild, 'valentines', ctx.author.name, ctx.author.id, amount, won, winnings if won else amount, new_bal))
+
+
+@bot.command(name='twist')
+async def twist(ctx, amount: str):
+    bal = get_user_balance(ctx.author.id)
+    amount = resolve_bet(amount, bal)
+    if amount is None: await ctx.send("❌ Invalid amount! Use a number, `all`, or `half`."); return
+    if amount <= 0: await ctx.send("❌ Bet must be positive!"); return
+    if amount > bal: await ctx.send(f"❌ Insufficient balance! You have {fmt(bal)}"); return
+    server_seed, client_seed, public_hash = generate_seeds()
+    rolls, result_mult = pf_twist(server_seed, client_seed)
+    faces = ["⚀", "⚁", "⚂", "⚃", "⚄", "⚅"]
+    embed = discord.Embed(title="🌀  Twist", description="🌀 Rolling the dice...", color=0xFFD700)
+    msg = await ctx.send(embed=embed)
+    shown = []
+    for r in rolls:
+        await asyncio.sleep(0.5); shown.append(faces[r - 1])
+        embed.description = f"🌀 {' '.join(shown)}  moving..."; await msg.edit(embed=embed)
+    await asyncio.sleep(0.3)
+    payout = round(amount * result_mult)
+    won = payout >= amount
+    profit = payout - amount
+    new_bal = bal - amount + payout
+    add_to_stats(ctx.author.id, won, amount); set_user_balance(ctx.author.id, new_bal)
+    if ctx.guild: asyncio.create_task(assign_rank_role(ctx.guild, ctx.author.id))
+    embed = discord.Embed(title=f"🎉 Twist — {result_mult:.2f}× PROFIT!" if won else f"😢 Twist — {result_mult:.2f}× (loss)", color=0x00FF88 if won else 0xFF4444)
+    embed.add_field(name="Rolls", value=f"{' '.join(f'{r}{faces[r-1]}' for r in rolls)}  = {sum(rolls)}", inline=False)
+    embed.add_field(name="Tile multiplier", value=f"{result_mult:.2f}×", inline=True)
+    embed.add_field(name="Payout", value=fmt(payout), inline=True)
+    embed.add_field(name="Change", value=f"{'+' if profit >= 0 else '-'}R${abs(profit):,}", inline=True)
+    embed.add_field(name="New Balance", value=fmt(new_bal), inline=False)
+    pf_add_field(embed, server_seed, client_seed, public_hash, "twist")
+    img_buf = twist_card(ctx.author.name, rolls, result_mult, won)
+    embed.set_image(url="attachment://twist.png")
+    await msg.edit(embed=embed, attachments=[send_image(img_buf, 'twist.png')])
+    asyncio.create_task(send_to_history(ctx.guild, 'twist', ctx.author.name, ctx.author.id, amount, won, profit if won else (amount - payout), new_bal))
+
+
+class TreasureView(discord.ui.View):
+    def __init__(self, user_id, user_name, bet, mults, server_seed, client_seed, public_hash):
+        super().__init__(timeout=60)
+        self.user_id = user_id; self.user_name = user_name; self.bet = bet
+        self.mults = mults; self.server_seed = server_seed
+        self.client_seed = client_seed; self.public_hash = public_hash
+        self.done = False
+        for i in range(len(mults)):
+            btn = discord.ui.Button(label=f"🧰 Chest {i+1}", style=discord.ButtonStyle.secondary, custom_id=f"chest_{i}")
+            btn.callback = self.make_callback(i); self.add_item(btn)
+
+    def make_callback(self, idx):
+        async def callback(interaction: discord.Interaction):
+            if interaction.user.id != self.user_id:
+                await interaction.response.send_message("Not your game!", ephemeral=True); return
+            if self.done:
+                await interaction.response.send_message("Already opened a chest!", ephemeral=True); return
+            self.done = True
+            mult = self.mults[idx]; payout = round(self.bet * mult); profit = payout - self.bet
+            won = payout >= self.bet
+            bal = get_user_balance(self.user_id); new_bal = bal - self.bet + payout
+            set_user_balance(self.user_id, new_bal); add_to_stats(self.user_id, won, self.bet)
+            for item in self.children:
+                cid = getattr(item, 'custom_id', None)
+                if cid and cid.startswith("chest_"):
+                    ci = int(cid.split("_")[1]); item.disabled = True
+                    item.label = f"{'➡️' if ci == idx else '🧰'} {self.mults[ci]:.2f}×"
+                    if ci == idx:
+                        item.style = discord.ButtonStyle.success if won else discord.ButtonStyle.danger
+            self.stop()
+            if interaction.guild: asyncio.create_task(assign_rank_role(interaction.guild, self.user_id))
+            embed = discord.Embed(
+                title=f"🎉 Treasure Hunt — {mult:.2f}× PROFIT!" if won else f"😢 Treasure Hunt — {mult:.2f}× (loss)",
+                color=0x00FF88 if won else 0xFF4444)
+            embed.add_field(name="Chest opened", value=f"#{idx+1} → {mult:.2f}×", inline=True)
+            embed.add_field(name="Payout", value=fmt(payout), inline=True)
+            embed.add_field(name="Change", value=f"{'+' if profit >= 0 else '-'}R${abs(profit):,}", inline=True)
+            embed.add_field(name="New Balance", value=fmt(new_bal), inline=False)
+            pf_add_field(embed, self.server_seed, self.client_seed, self.public_hash, "treasurehunt")
+            await interaction.response.edit_message(embed=embed, view=self)
+            asyncio.create_task(send_to_history(interaction.guild, 'treasurehunt', self.user_name, self.user_id, self.bet, won, profit if won else (self.bet - payout), new_bal))
+        return callback
+
+
+@bot.command(name='treasurehunt', aliases=['th'])
+async def treasurehunt(ctx, amount: str):
+    bal = get_user_balance(ctx.author.id)
+    amount = resolve_bet(amount, bal)
+    if amount is None: await ctx.send("❌ Invalid amount! Use a number, `all`, or `half`."); return
+    if amount <= 0: await ctx.send("❌ Bet must be positive!"); return
+    if amount > bal: await ctx.send(f"❌ Insufficient balance! You have {fmt(bal)}"); return
+    server_seed, client_seed, public_hash = generate_seeds()
+    mults = pf_treasure(server_seed, client_seed, 3)
+    view = TreasureView(ctx.author.id, ctx.author.name, amount, mults, server_seed, client_seed, public_hash)
+    embed = discord.Embed(title="💰  Treasure Hunt", color=0xFFD700, description=(
+        f"Bet: **{fmt(amount)}**\n\nPick a chest! Each holds a hidden multiplier of up to **2.5×**.\n"
+        "Your payout = bet × the chest you open."))
+    embed.set_footer(text="One pick — choose wisely!")
+    await ctx.send(embed=embed, view=view)
+
+
+def make_tower_embed(bet, diff, rows_cleared, client_seed, public_hash, server_seed=None, status=None, color=0x1E90FF):
+    tiles, safe = TOWER_DIFFS[diff]
+    cur = tower_multiplier(diff, rows_cleared)
+    nxt = tower_multiplier(diff, rows_cleared + 1)
+    embed = discord.Embed(title="🗼  Tower Climb", color=color)
+    lines = []
+    for r in range(TOWER_ROWS - 1, -1, -1):
+        if r < rows_cleared: marker = "🟩 " * tiles
+        elif r == rows_cleared and status is None: marker = "⬜ " * tiles + " ⬅️"
+        else: marker = "⬛ " * tiles
+        lines.append(f"`R{r+1}` {marker}")
+    embed.description = "\n".join(lines)
+    embed.add_field(name="Bet", value=fmt(bet), inline=True)
+    embed.add_field(name="Difficulty", value=f"{diff.title()} ({safe}/{tiles} safe)", inline=True)
+    embed.add_field(name="Rows cleared", value=str(rows_cleared), inline=True)
+    embed.add_field(name="Current", value=f"{cur:.2f}× = {fmt(round(bet*cur))}", inline=True)
+    if rows_cleared < TOWER_ROWS:
+        embed.add_field(name="Next row", value=f"{nxt:.2f}×", inline=True)
+    if status:
+        embed.add_field(name="Result", value=status, inline=False)
+    if server_seed:
+        pf_add_field(embed, server_seed, client_seed, public_hash, "tower")
+    else:
+        embed.set_footer(text=f"Client Seed: {client_seed}  |  Hash: {public_hash[:16]}…")
+    return embed
+
+
+class TowerView(discord.ui.View):
+    def __init__(self, user_id, user_name, bet, diff, bombs, server_seed, client_seed, public_hash):
+        super().__init__(timeout=120)
+        self.user_id = user_id; self.user_name = user_name; self.bet = bet
+        self.diff = diff; self.bombs = bombs; self.server_seed = server_seed
+        self.client_seed = client_seed; self.public_hash = public_hash
+        self.row = 0; self.game_over = False
+        self._build_row()
+
+    def _build_row(self):
+        self.clear_items()
+        tiles, _ = TOWER_DIFFS[self.diff]
+        for col in range(tiles):
+            btn = discord.ui.Button(label=f"{col+1}", style=discord.ButtonStyle.secondary, row=0, custom_id=f"tw_{col}")
+            btn.callback = self.make_callback(col); self.add_item(btn)
+        cur = tower_multiplier(self.diff, self.row)
+        co_label = f"💰 Cash Out  R${round(self.bet*cur):,}" if self.row > 0 else "💰 Cash Out"
+        co = discord.ui.Button(label=co_label, style=discord.ButtonStyle.success, row=1, custom_id="tw_cash")
+        co.callback = self.cashout_callback; self.add_item(co)
+
+    def _settle_win(self, rows_cleared):
+        mult = tower_multiplier(self.diff, rows_cleared); winnings = round(self.bet * mult)
+        profit = winnings - self.bet; bal = get_user_balance(self.user_id); new_bal = bal + profit
+        set_user_balance(self.user_id, new_bal); add_to_stats(self.user_id, True, self.bet)
+        return mult, winnings, profit, new_bal
+
+    def make_callback(self, col):
+        async def callback(interaction: discord.Interaction):
+            if interaction.user.id != self.user_id:
+                await interaction.response.send_message("Not your game!", ephemeral=True); return
+            if self.game_over: return
+            if col == self.bombs[self.row]:
+                self.game_over = True
+                bal = get_user_balance(self.user_id); new_bal = bal - self.bet
+                set_user_balance(self.user_id, new_bal); add_to_stats(self.user_id, False, self.bet)
+                for item in self.children: item.disabled = True
+                self.stop()
+                status = f"💥 Hit a bomb on row {self.row+1}! Lost **{self.bet:,}** pts  |  New Balance: **R${new_bal:,}**"
+                embed = make_tower_embed(self.bet, self.diff, self.row, self.client_seed, self.public_hash,
+                                         server_seed=self.server_seed, status=status, color=0xFF4444)
+                await interaction.response.edit_message(embed=embed, view=self)
+                asyncio.create_task(send_to_history(interaction.guild, 'tower', self.user_name, self.user_id, self.bet, False, self.bet, new_bal))
+            else:
+                self.row += 1
+                if self.row >= TOWER_ROWS:
+                    self.game_over = True
+                    mult, winnings, profit, new_bal = self._settle_win(self.row)
+                    for item in self.children: item.disabled = True
+                    self.stop()
+                    if interaction.guild: asyncio.create_task(assign_rank_role(interaction.guild, self.user_id))
+                    status = f"🏆 Reached the top! Won **{winnings:,}** pts ({mult:.2f}×)  |  New Balance: **R${new_bal:,}**"
+                    embed = make_tower_embed(self.bet, self.diff, self.row, self.client_seed, self.public_hash,
+                                             server_seed=self.server_seed, status=status, color=0x00FF88)
+                    await interaction.response.edit_message(embed=embed, view=self)
+                    asyncio.create_task(send_to_history(interaction.guild, 'tower', self.user_name, self.user_id, self.bet, True, profit, new_bal))
+                else:
+                    self._build_row()
+                    await interaction.response.edit_message(
+                        embed=make_tower_embed(self.bet, self.diff, self.row, self.client_seed, self.public_hash), view=self)
+        return callback
+
+    async def cashout_callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("Not your game!", ephemeral=True); return
+        if self.game_over: return
+        if self.row == 0:
+            await interaction.response.send_message("Clear at least one row first!", ephemeral=True); return
+        self.game_over = True
+        mult, winnings, profit, new_bal = self._settle_win(self.row)
+        for item in self.children: item.disabled = True
+        self.stop()
+        if interaction.guild: asyncio.create_task(assign_rank_role(interaction.guild, self.user_id))
+        status = f"✅ Cashed out **{winnings:,}** pts ({mult:.2f}×)  |  New Balance: **R${new_bal:,}**"
+        embed = make_tower_embed(self.bet, self.diff, self.row, self.client_seed, self.public_hash,
+                                 server_seed=self.server_seed, status=status, color=0x00FF88)
+        await interaction.response.edit_message(embed=embed, view=self)
+        asyncio.create_task(send_to_history(interaction.guild, 'tower', self.user_name, self.user_id, self.bet, True, profit, new_bal))
+
+
+class TowerStartView(discord.ui.View):
+    def __init__(self, user_id, user_name, bet):
+        super().__init__(timeout=60)
+        self.user_id = user_id; self.user_name = user_name; self.bet = bet
+        for diff in ('easy', 'medium', 'hard'):
+            tiles, safe = TOWER_DIFFS[diff]
+            btn = discord.ui.Button(label=f"{diff.title()} ({safe}/{tiles})", style=discord.ButtonStyle.primary, custom_id=f"diff_{diff}")
+            btn.callback = self.make_callback(diff); self.add_item(btn)
+
+    def make_callback(self, diff):
+        async def callback(interaction: discord.Interaction):
+            if interaction.user.id != self.user_id:
+                await interaction.response.send_message("Not your game!", ephemeral=True); return
+            bal = get_user_balance(self.user_id)
+            if self.bet > bal:
+                await interaction.response.send_message(f"❌ Insufficient balance! You have {fmt(bal)}", ephemeral=True); return
+            server_seed, client_seed, public_hash = generate_seeds()
+            bombs = pf_tower_bombs(server_seed, client_seed, diff)
+            view = TowerView(self.user_id, self.user_name, self.bet, diff, bombs, server_seed, client_seed, public_hash)
+            self.stop()
+            await interaction.response.edit_message(
+                embed=make_tower_embed(self.bet, diff, 0, client_seed, public_hash), view=view)
+        return callback
+
+
+@bot.command(name='tower')
+async def tower(ctx, amount: str):
+    bal = get_user_balance(ctx.author.id)
+    amount = resolve_bet(amount, bal)
+    if amount is None: await ctx.send("❌ Invalid amount! Use a number, `all`, or `half`."); return
+    if amount <= 0: await ctx.send("❌ Bet must be positive!"); return
+    if amount > bal: await ctx.send(f"❌ Insufficient balance! You have {fmt(bal)}"); return
+    view = TowerStartView(ctx.author.id, ctx.author.name, amount)
+    embed = discord.Embed(title="🗼  Tower Climb", color=0x1E90FF, description=(
+        f"Bet: **{fmt(amount)}**\n\nChoose a difficulty to start climbing. Pick a safe tile each row to "
+        "grow your multiplier — but one tile per row is a bomb. Cash out any time!\n\n"
+        "🟢 **Easy** — 3/4 safe\n🟡 **Medium** — 2/3 safe\n🔴 **Hard** — 1/2 safe"))
+    await ctx.send(embed=embed, view=view)
+
+
+TTT_WIN_LINES = [(0, 1, 2), (3, 4, 5), (6, 7, 8), (0, 3, 6), (1, 4, 7), (2, 5, 8), (0, 4, 8), (2, 4, 6)]
+
+
+def make_ttt_embed(p1, p2, turn_mark, status=None):
+    embed = discord.Embed(title="#️⃣  Tic Tac Toe", color=0x9B59B6)
+    embed.add_field(name="❌ Player X", value=p1.mention, inline=True)
+    embed.add_field(name="⭕ Player O", value=p2.mention, inline=True)
+    if status:
+        embed.description = status
+    else:
+        cur = p1 if turn_mark == 'X' else p2
+        embed.description = f"It's {cur.mention}'s turn ({turn_mark})"
+    return embed
+
+
+class TicTacToeView(discord.ui.View):
+    def __init__(self, p1, p2):
+        super().__init__(timeout=180)
+        self.players = {'X': p1, 'O': p2}
+        self.turn = 'X'; self.board = [None] * 9; self.over = False
+        for i in range(9):
+            btn = discord.ui.Button(label="\u200b", style=discord.ButtonStyle.secondary, row=i // 3, custom_id=f"ttt_{i}")
+            btn.callback = self.make_callback(i); self.add_item(btn)
+
+    def _winner(self):
+        for a, b, c in TTT_WIN_LINES:
+            if self.board[a] and self.board[a] == self.board[b] == self.board[c]:
+                return self.board[a]
+        return None
+
+    def make_callback(self, idx):
+        async def callback(interaction: discord.Interaction):
+            cur = self.players[self.turn]
+            if interaction.user.id != cur.id:
+                await interaction.response.send_message("Not your turn!", ephemeral=True); return
+            if self.over or self.board[idx] is not None:
+                await interaction.response.send_message("Invalid move!", ephemeral=True); return
+            self.board[idx] = self.turn
+            for item in self.children:
+                if getattr(item, 'custom_id', None) == f"ttt_{idx}":
+                    item.label = "❌" if self.turn == 'X' else "⭕"
+                    item.style = discord.ButtonStyle.danger if self.turn == 'X' else discord.ButtonStyle.primary
+                    item.disabled = True
+            win_mark = self._winner()
+            p1, p2 = self.players['X'], self.players['O']
+            if win_mark:
+                self.over = True
+                for item in self.children: item.disabled = True
+                self.stop()
+                winner = self.players[win_mark]
+                embed = make_ttt_embed(p1, p2, self.turn, status=f"🎉 {winner.mention} wins! ({win_mark})")
+            elif all(b is not None for b in self.board):
+                self.over = True; self.stop()
+                embed = make_ttt_embed(p1, p2, self.turn, status="🤝 It's a draw!")
+            else:
+                self.turn = 'O' if self.turn == 'X' else 'X'
+                embed = make_ttt_embed(p1, p2, self.turn)
+            await interaction.response.edit_message(embed=embed, view=self)
+        return callback
+
+
+@bot.command(name='ttt')
+async def ttt(ctx, opponent: discord.Member = None):
+    if opponent is None or opponent.bot or opponent.id == ctx.author.id:
+        await ctx.send("❌ Usage: `.ttt @user` — mention another player to challenge."); return
+    view = TicTacToeView(ctx.author, opponent)
+    embed = make_ttt_embed(ctx.author, opponent, 'X')
+    await ctx.send(content=f"{ctx.author.mention} (❌) vs {opponent.mention} (⭕)", embed=embed, view=view)
+
+
 @bot.command(name='slots')
 async def slots(ctx, amount: str):
     bal = get_user_balance(ctx.author.id)
@@ -1129,6 +1705,12 @@ async def verify(ctx, game: str = None, server_seed: str = None, client_seed: st
             "`.verify slots <server_seed> <client_seed>`\n"
             "`.verify roulette <server_seed> <client_seed>`\n"
             "`.verify limbo <server_seed> <client_seed>`\n"
+            "`.verify slide <server_seed> <client_seed>`\n"
+            "`.verify tight <server_seed> <client_seed>`\n"
+            "`.verify twist <server_seed> <client_seed>`\n"
+            "`.verify rps <server_seed> <client_seed>`\n"
+            "`.verify war <server_seed> <client_seed>`\n"
+            "`.verify valentines <server_seed> <client_seed>`\n"
             "`.verify mines <server_seed> <client_seed> <mine_count>`\n\n"
             "The **Server Seed** and **Client Seed** are shown at the bottom of every game result."
         ))
@@ -1161,6 +1743,25 @@ async def verify(ctx, game: str = None, server_seed: str = None, client_seed: st
     elif game == "limbo":
         result = pf_limbo(server_seed, client_seed)
         embed.add_field(name="✅ Result", value=f"**{result:.2f}×** (win if ≥ your target)", inline=False)
+    elif game == "slide":
+        result = pf_slide(server_seed, client_seed)
+        embed.add_field(name="✅ Result", value=f"**{result:.2f}×** (win if ≥ your target)", inline=False)
+    elif game == "tight":
+        result = pf_tight(server_seed, client_seed)
+        embed.add_field(name="✅ Result", value=f"**{result:.2f}×** payout multiplier", inline=False)
+    elif game == "twist":
+        rolls, mult = pf_twist(server_seed, client_seed)
+        embed.add_field(name="✅ Result", value=f"Rolls **{rolls}** = {sum(rolls)} → **{mult:.2f}×**", inline=False)
+    elif game == "rps":
+        result = pf_rps(server_seed, client_seed)
+        embed.add_field(name="✅ Result (bot move)", value=f"**{result.upper()}**", inline=False)
+    elif game == "war":
+        p, dlr = pf_war_cards(server_seed, client_seed)
+        names = {11: 'J', 12: 'Q', 13: 'K', 14: 'A'}
+        embed.add_field(name="✅ Result", value=f"You **{names.get(p, p)}** vs Dealer **{names.get(dlr, dlr)}**", inline=False)
+    elif game == "valentines":
+        result = pf_valentines(server_seed, client_seed)
+        embed.add_field(name="✅ Result", value=f"**{result[0]}  {result[1]}  {result[2]}**", inline=False)
     elif game in ("mines", "mine"):
         mine_count = int(extra) if extra and extra.isdigit() else 3
         positions = pf_mine_positions(server_seed, client_seed, mine_count)
@@ -1173,7 +1774,7 @@ async def verify(ctx, game: str = None, server_seed: str = None, client_seed: st
         embed.add_field(name="Draw roll (nonce 1)",  value=f"`{draw_val:.6f}` — used for weighted winner selection", inline=False)
         embed.add_field(name="✅ Outcome", value="**POT FAILED** (no winner)" if failed else f"Winner determined by draw roll `{draw_val:.6f}` against entry weights", inline=False)
     else:
-        embed.add_field(name="❌ Unknown game", value=f"Supported: `coinflip`, `dice`, `slots`, `roulette`, `limbo`, `mines`, `jackpot`", inline=False)
+        embed.add_field(name="❌ Unknown game", value=f"Supported: `coinflip`, `dice`, `slots`, `roulette`, `limbo`, `slide`, `tight`, `twist`, `rps`, `war`, `valentines`, `mines`, `jackpot`", inline=False)
 
     embed.set_footer(text="Hash = SHA-256(server_seed) — you can verify this yourself at any SHA-256 tool.")
     await ctx.send(embed=embed)
@@ -2254,6 +2855,17 @@ async def help_command(ctx):
         "`.mines <amt> [mines]` — Provably fair mines\n"
         "`.crash <amt>` — Multiplayer crash game\n"
         "`.jackpot` / `.jp <amt>` — Weighted jackpot pool"
+    ), inline=False)
+    embed.add_field(name="🎮 More Games", value=(
+        "✂️ `.rps <amt> <r/p/s>` — Rock-Paper-Scissors vs the bot\n"
+        "🎢 `.slide <amt> <target>` — Slider; win if it lands ≥ your pick\n"
+        "#️⃣ `.ttt @user` — Tic Tac Toe against another user\n"
+        "🗜️ `.tight <amt>` — Random multiplier up to 5.00× (96% RTP)\n"
+        "🗼 `.tower <amt>` — Climb the tower; choose difficulty after betting\n"
+        "💰 `.treasurehunt` / `.th <amt>` — Pick a chest, up to 2.5×\n"
+        "🌀 `.twist <amt>` — Move through multiplier tiles via dice rolls\n"
+        "💘 `.valentines <amt>` — Special Valentine's Day slots\n"
+        "⚔️ `.war <amt>` — Card war; highest card wins ×2"
     ), inline=False)
     embed.add_field(name="🎁 Rewards", value=(
         "`.daily` — 5 pts free (24h cooldown)\n"

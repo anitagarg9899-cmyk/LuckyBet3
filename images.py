@@ -187,6 +187,120 @@ def limbo_card(username, target, result, won):
     result_banner(d, W, 272, won, label)
     return to_buf(img)
 
+def tie_banner(d, W, y, text):
+    rr(d, [20, y, W - 20, y + 46], 10, fill=(60, 55, 10))
+    center_text(d, text, fnt(22, bold=True), W // 2, y + 23, GOLD)
+
+# Rock-Paper-Scissors card
+
+def rps_card(username, player, bot_move, outcome):
+    W, H = 500, 340
+    img, d = make_card(W, H, "\u2702\ufe0f  Rock Paper Scissors", f"bet by {username}")
+
+    center_text(d, "YOU", fnt(14, bold=True), W // 4, 86, GRAY)
+    center_text(d, "BOT", fnt(14, bold=True), 3 * W // 4, 86, GRAY)
+    center_text(d, player.upper(), fnt(28, bold=True), W // 4, 150, ACCENT)
+    center_text(d, bot_move.upper(), fnt(28, bold=True), 3 * W // 4, 150, GOLD)
+    center_text(d, "VS", fnt(22, bold=True), W // 2, 150, WHITE)
+
+    if outcome == 'tie':
+        tie_banner(d, W, 272, "TIE \u2014 PUSH")
+    else:
+        result_banner(d, W, 272, outcome == 'win', "YOU WIN! (x2)" if outcome == 'win' else "YOU LOST")
+    return to_buf(img)
+
+# Slide card
+
+def slide_card(username, target, result, won):
+    W, H = 500, 340
+    img, d = make_card(W, H, "\U0001f3a2  Slide", f"bet by {username}")
+
+    maxv = 10.0
+    bx0, bx1, by = 40, W - 40, 165
+    d.line([(bx0, by), (bx1, by)], fill=DARKGRAY, width=6)
+    fr_t = min(target, maxv) / maxv
+    fr_r = min(result, maxv) / maxv
+    tx = bx0 + (bx1 - bx0) * fr_t
+    rx = bx0 + (bx1 - bx0) * fr_r
+    d.line([(tx, by - 26), (tx, by + 26)], fill=GOLD, width=3)
+    center_text(d, f"target {target:.2f}x", fnt(12, bold=True), tx, by - 40, GOLD)
+    rc = GREEN if won else RED
+    d.ellipse([rx - 11, by - 11, rx + 11, by + 11], fill=rc)
+    center_text(d, f"{result:.2f}x", fnt(13, bold=True), rx, by + 40, rc)
+
+    result_banner(d, W, 272, won, f"Landed {result:.2f}x {'>=' if won else '<'} {target:.2f}x")
+    return to_buf(img)
+
+# Tight card
+
+def tight_card(username, result, won):
+    W, H = 500, 340
+    img, d = make_card(W, H, "\U0001f5dc\ufe0f  Tight", f"bet by {username}")
+
+    rc = GREEN if won else RED
+    center_text(d, f"{result:.2f}\u00d7", fnt(66, bold=True), W // 2, 155, rc)
+    center_text(d, "PAYOUT MULTIPLIER", fnt(13, bold=True), W // 2, 205, GRAY)
+
+    result_banner(d, W, 272, won, "PROFIT!" if won else "LOSS")
+    return to_buf(img)
+
+# War card
+
+def war_card(username, player, dealer, outcome):
+    W, H = 500, 340
+    img, d = make_card(W, H, "\u2694\ufe0f  War", f"bet by {username}")
+
+    def rank_lbl(r):
+        return {11: 'J', 12: 'Q', 13: 'K', 14: 'A'}.get(r, str(r))
+
+    cy = 150
+    for cx, val, who in [(W // 4, player, 'YOU'), (3 * W // 4, dealer, 'DEALER')]:
+        w, h = 84, 116
+        rr(d, [cx - w // 2, cy - h // 2, cx + w // 2, cy + h // 2], 10, fill=WHITE, outline=(180, 180, 180), width=2)
+        center_text(d, rank_lbl(val), fnt(40, bold=True), cx, cy - 2, (30, 30, 30))
+        center_text(d, who, fnt(13, bold=True), cx, cy + h // 2 + 14, GRAY)
+    center_text(d, "VS", fnt(22, bold=True), W // 2, cy, WHITE)
+
+    if outcome == 'tie':
+        tie_banner(d, W, 272, "WAR \u2014 PUSH")
+    else:
+        result_banner(d, W, 272, outcome == 'win', "YOU WIN! (x2)" if outcome == 'win' else "DEALER WINS")
+    return to_buf(img)
+
+# Valentine's slots card
+
+VAL_LABELS = {
+    '\U0001f498': '\u2665', '\U0001f496': '\u2661', '\U0001f49d': 'GF',
+    '\U0001f339': 'RS', '\U0001f36b': 'CH', '\U0001f48d': 'RG',
+}
+
+def valentines_card(username, symbols, won, label):
+    W, H = 500, 340
+    img, d = make_card(W, H, "\U0001f498  Valentine's Slots", f"bet by {username}")
+
+    positions = [W // 2 - 120, W // 2, W // 2 + 120]
+    for cx, sym in zip(positions, symbols):
+        half = 50
+        rr(d, [cx - half, 175 - half, cx + half, 175 + half], 12, fill=(120, 20, 60), outline=(255, 120, 160), width=3)
+        center_text(d, VAL_LABELS.get(sym, '?'), fnt(30, bold=True), cx, 173, (255, 185, 205))
+
+    result_banner(d, W, 272, won, label)
+    return to_buf(img)
+
+# Twist card
+
+def twist_card(username, rolls, mult, won):
+    W, H = 500, 340
+    img, d = make_card(W, H, "\U0001f300  Twist", f"bet by {username}")
+
+    xs = [W // 2 - 90, W // 2, W // 2 + 90]
+    for cx, val in zip(xs, rolls):
+        draw_die(d, cx, 130, 70, val)
+    center_text(d, f"Moved {sum(rolls)} tiles  \u2192  {mult:.2f}\u00d7", fnt(18, bold=True), W // 2, 200, ACCENT)
+
+    result_banner(d, W, 272, won, f"{mult:.2f}x payout " + ("PROFIT!" if won else "LOSS"))
+    return to_buf(img)
+
 # Slots card
 
 SLOT_COLORS = {
