@@ -26,7 +26,7 @@ intents.invites = True
 
 bot = commands.Bot(command_prefix='.', intents=intents, help_command=None)
 
-DB_FILE      = 'user_data.json'
+DB_FILE      = os.getenv('DATA_FILE', 'user_data.json')
 active_mines = {}
 active_bj    = {}
 invite_cache = {}   # guild_id -> {code: uses}
@@ -2842,6 +2842,42 @@ async def stats_error(ctx, error):
     else: await ctx.send("❌ Usage: `.stats` or `.stats @user`")
 
 
+GAMES_CATALOG = [
+    ("🪙", ".coinflip / .cf <amt> <h/t>", "Coin flip, 1:1 payout"),
+    ("🎲", ".dice <amt> <1-6>", "Guess the die roll, ×5"),
+    ("📈", ".limbo <amt> <target>", "Beat your target multiplier"),
+    ("🎢", ".slide <amt> <target>", "Slider; win if it lands ≥ your pick"),
+    ("🗜️", ".tight <amt>", "Random multiplier up to 5.00× (96% RTP)"),
+    ("🌀", ".twist <amt>", "Move through multiplier tiles via dice rolls"),
+    ("💰", ".treasurehunt / .th <amt>", "Pick a chest, multiplier up to 2.5×"),
+    ("🗼", ".tower <amt>", "Climb the tower; choose difficulty after betting"),
+    ("⛏️", ".mines <amt> [mines]", "Provably fair mines"),
+    ("🎰", ".slots <amt>", "Slots up to ×100"),
+    ("💘", ".valentines <amt>", "Special Valentine's Day slots"),
+    ("🎡", ".roulette <amt> <r/b/e/o>", "Roulette, ×2"),
+    ("🃏", ".blackjack / .bj <amt>", "Hit, Stand, Double"),
+    ("⚔️", ".war <amt>", "Card war; highest card wins ×2"),
+    ("✂️", ".rps <amt> <r/p/s>", "Rock-Paper-Scissors vs the bot"),
+    ("#️⃣", ".ttt @user", "Tic Tac Toe against another user"),
+    ("🚀", ".crash <amt>", "Multiplayer crash game"),
+    ("🎰", ".jackpot / .jp <amt>", "Weighted jackpot pool"),
+]
+
+
+@bot.command(name='games')
+async def games_command(ctx):
+    embed = discord.Embed(
+        title="🎮  LuckyBet — All Games",
+        description=f"**{len(GAMES_CATALOG)}** games available. Use `.help` for the full command list.",
+        color=0x9B59B6)
+    lines = [f"{emoji} `{usage}`\n— {desc}" for emoji, usage, desc in GAMES_CATALOG]
+    half = (len(lines) + 1) // 2
+    embed.add_field(name="\u200b", value="\n".join(lines[:half]), inline=True)
+    embed.add_field(name="\u200b", value="\n".join(lines[half:]), inline=True)
+    embed.set_footer(text="All games are provably fair — verify any result with .verify")
+    await ctx.send(embed=embed)
+
+
 @bot.command(name='help')
 async def help_command(ctx):
     embed = discord.Embed(title="🎰  LuckyBet — Commands", color=0x9B59B6)
@@ -2881,6 +2917,7 @@ async def help_command(ctx):
         "`.thread` — Create a private thread"
     ), inline=False)
     embed.add_field(name="📊 Info", value=(
+        "`.games` — List every game in the bot\n"
         "`.balance` / `.bal` — Your balance\n"
         "`.stats [@user]` — Full profile & lifetime stats\n"
         "`.rank` — Full rank progress\n"
