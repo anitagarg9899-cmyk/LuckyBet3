@@ -964,6 +964,44 @@ async def sethistory_error(ctx, error):
     else: await ctx.send("❌ Usage: `.sethistory #channel`")
 
 
+@bot.command(name='setdepositlog', aliases=['setdepositlogs'])
+@commands.has_permissions(administrator=True)
+async def setdepositlog(ctx, channel: discord.TextChannel = None):
+    if channel is None:
+        await ctx.send("❌ Usage: `.setdepositlog #channel`"); return
+    cfg = get_config()
+    cfg['deposit_log_channel'] = str(channel.id)
+    save_config(cfg)
+    embed = discord.Embed(
+        title="💸 Deposit Log Channel Set",
+        description=f"Every confirmed deposit will now be logged to {channel.mention}.",
+        color=0x00FF88
+    )
+    await ctx.send(embed=embed)
+
+@setdepositlog.error
+async def setdepositlog_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions): await ctx.send("🚫 Administrator permission required!")
+    elif isinstance(error, commands.ChannelNotFound):  await ctx.send("❌ Channel not found — mention it with #")
+    else: await ctx.send("❌ Usage: `.setdepositlog #channel`")
+
+
+@bot.command(name='cleardepositlog')
+@commands.has_permissions(administrator=True)
+async def cleardepositlog(ctx):
+    cfg = get_config()
+    if 'deposit_log_channel' not in cfg:
+        await ctx.send("❌ No deposit log channel is currently set."); return
+    del cfg['deposit_log_channel']
+    save_config(cfg)
+    embed = discord.Embed(title="💸 Deposit Logging Disabled", description="Deposit logging has been turned off.", color=0xFF8800)
+    await ctx.send(embed=embed)
+
+@cleardepositlog.error
+async def cleardepositlog_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions): await ctx.send("🚫 Administrator permission required!")
+
+
 @bot.command(name='clearhistory')
 @commands.has_permissions(administrator=True)
 async def clearhistory(ctx):
@@ -2921,13 +2959,38 @@ async def credit_deposit(payment_id, dep):
     rec['credited_at'] = datetime.now(timezone.utc).isoformat()
     deposits[payment_id] = rec
     save_deposits(deposits)
+    user = None
     try:
         user = await bot.fetch_user(uid)
-        embed = discord.Embed(title="✅ Deposit Confirmed", color=0x00FF88, description=(
-            f"Your LTC deposit of **${rec['usd']:.2f}** has been confirmed!\n\n"
-            f"**+{rec['points']:,} points** added to your balance.\n"
-            f"New balance: **R${get_user_balance(uid):,}**"))
+        embed = discord.Embed(color=0x00FF88, description=(
+            f"🎉 **Deposit Confirmed!**\n"
+            f"Your payment of **${rec['usd']:.2f}** was successfully received. "
+            f"**{rec['points']:,} points** have been permanently added to your casino balance!"))
         await user.send(embed=embed)
+    except Exception:
+        pass
+    await log_deposit(rec, payment_id, user)
+
+
+async def log_deposit(rec, payment_id, user=None):
+    """Post a confirmed deposit to the configured deposit-log channel."""
+    cfg = get_config()
+    ch_id = cfg.get('deposit_log_channel')
+    if not ch_id:
+        return
+    channel = bot.get_channel(int(ch_id))
+    if not channel:
+        return
+    uid = int(rec['user_id'])
+    who = user.mention if user else f"<@{uid}>"
+    embed = discord.Embed(title="💸 Deposit Logged", color=0x00FF88, timestamp=datetime.now(timezone.utc))
+    embed.description = (
+        f"**User:** {who} (`{uid}`)\n"
+        f"**Amount:** ${rec['usd']:.2f}  ·  {rec.get('pay_amount', '?')} LTC\n"
+        f"**Credited:** {rec['points']:,} points")
+    embed.set_footer(text=f"Payment ID: {payment_id}")
+    try:
+        await channel.send(embed=embed)
     except Exception:
         pass
 
@@ -3076,6 +3139,8 @@ async def help_command(ctx):
         "`.rankroles` — View current rank→role config\n"
         "`.sethistory #channel` — Log every bet result there\n"
         "`.clearhistory` — Disable bet history logging\n"
+        "`.setdepositlog #channel` — Log every confirmed deposit there\n"
+        "`.cleardepositlog` — Disable deposit logging\n"
         "`.addcode <CODE> <pts> <uses> <days>` — Create promo code\n"
         "`.delcode <CODE>` — Delete a code\n"
         "`.codes` — List all active codes"
