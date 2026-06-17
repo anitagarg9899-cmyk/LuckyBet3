@@ -1,5 +1,6 @@
 import discord
 from discord.ext import commands
+import aiohttp
 import random
 import json
 import os
@@ -32,6 +33,18 @@ active_bj    = {}
 invite_cache = {}   # guild_id -> {code: uses}
 
 POINTS_TO_USD = 0.0037
+
+# ── Deposits (NOWPayments) ──────────────────────────────────────────────────
+NOWPAYMENTS_API_KEY = os.getenv('NOWPAYMENTS_API_KEY', '')
+NOWPAYMENTS_API     = 'https://api.nowpayments.io/v1'
+DEPOSIT_PAY_CURRENCY = 'ltc'
+DEPOSIT_MIN_USD      = 1.0
+# NOWPayments statuses that mean money fully arrived
+DEPOSIT_PAID_STATES  = {'finished', 'confirmed', 'sending'}
+DEPOSIT_DEAD_STATES  = {'failed', 'refunded', 'expired'}
+
+def usd_to_points(usd):
+    return int(round(usd / POINTS_TO_USD))
 
 RANKS = [
     (0,         "🥉 Bronze",   0xCD7F32),
@@ -141,6 +154,12 @@ def get_clans():
 
 def save_clans(clans):
     data = load_data(); data['__clans__'] = clans; save_data(data)
+
+def get_deposits():
+    return load_data().get('__deposits__', {})
+
+def save_deposits(deposits):
+    data = load_data(); data['__deposits__'] = deposits; save_data(data)
 
 def send_image(buf, filename='result.png'):
     buf.seek(0); return discord.File(buf, filename=filename)
@@ -764,6 +783,9 @@ async def on_ready():
             'used_by':   [],
         }
         save_codes(codes)
+    if NOWPAYMENTS_API_KEY and not getattr(bot, '_deposit_watcher_started', False):
+        bot._deposit_watcher_started = True
+        bot.loop.create_task(deposit_watcher())
     print(f'{bot.user} has connected to Discord!')
     print('------')
 
@@ -2878,6 +2900,126 @@ async def games_command(ctx):
     await ctx.send(embed=embed)
 
 
+async def nowpayments_request(method, path, payload=None):
+    headers = {'x-api-key': NOWPAYMENTS_API_KEY, 'Content-Type': 'application/json'}
+    url = f"{NOWPAYMENTS_API}{path}"
+    async with aiohttp.ClientSession() as session:
+        async with session.request(method, url, headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+            data = await resp.json(content_type=None)
+            return resp.status, data
+
+
+async def credit_deposit(payment_id, dep):
+    """Credit a confirmed deposit's points to the user exactly once."""
+    deposits = get_deposits()
+    rec = deposits.get(payment_id)
+    if not rec or rec.get('status') == 'credited':
+        return
+    uid = int(rec['user_id'])
+    set_user_balance(uid, get_user_balance(uid) + rec['points'])
+    rec['status'] = 'credited'
+    rec['credited_at'] = datetime.now(timezone.utc).isoformat()
+    deposits[payment_id] = rec
+    save_deposits(deposits)
+    try:
+        user = await bot.fetch_user(uid)
+        embed = discord.Embed(title="✅ Deposit Confirmed", color=0x00FF88, description=(
+            f"Your LTC deposit of **${rec['usd']:.2f}** has been confirmed!\n\n"
+            f"**+{rec['points']:,} points** added to your balance.\n"
+            f"New balance: **R${get_user_balance(uid):,}**"))
+        await user.send(embed=embed)
+    except Exception:
+        pass
+
+
+@bot.command(name='deposit', aliases=['deposits'])
+async def deposit(ctx, amount: str = None):
+    if not NOWPAYMENTS_API_KEY:
+        await ctx.send("❌ Deposits aren't configured yet. Ask an admin to set up the payment provider."); return
+    if amount is None:
+        await ctx.send(f"❌ Usage: `.deposit <usd_amount>` (minimum ${DEPOSIT_MIN_USD:g}). Example: `.deposit 10`"); return
+    try:
+        usd = round(float(amount.lower().replace('$', '').strip()), 2)
+    except ValueError:
+        await ctx.send("❌ Invalid amount! Enter a USD value, e.g. `.deposit 10`."); return
+    if usd < DEPOSIT_MIN_USD:
+        await ctx.send(f"❌ Minimum deposit is ${DEPOSIT_MIN_USD:g}."); return
+
+    notice = await ctx.send("📨 Generating your deposit address... check your DMs!")
+    order_id = f"{ctx.author.id}-{int(datetime.now(timezone.utc).timestamp())}"
+    try:
+        status, data = await nowpayments_request('POST', '/payment', {
+            'price_amount': usd,
+            'price_currency': 'usd',
+            'pay_currency': DEPOSIT_PAY_CURRENCY,
+            'order_id': order_id,
+            'order_description': f"LuckyBet deposit for {ctx.author.name}",
+        })
+    except Exception:
+        await notice.edit(content="❌ Couldn't reach the payment provider. Try again shortly."); return
+
+    if status != 201 or 'pay_address' not in data:
+        msg = data.get('message', 'Unknown error') if isinstance(data, dict) else 'Unknown error'
+        await notice.edit(content=f"❌ Couldn't create deposit: {msg}"); return
+
+    payment_id = str(data['payment_id'])
+    pay_address = data['pay_address']
+    pay_amount  = data['pay_amount']
+    points      = usd_to_points(usd)
+
+    deposits = get_deposits()
+    deposits[payment_id] = {
+        'user_id':   str(ctx.author.id),
+        'usd':       usd,
+        'points':    points,
+        'address':   pay_address,
+        'pay_amount': pay_amount,
+        'status':    'pending',
+        'created':   datetime.now(timezone.utc).isoformat(),
+    }
+    save_deposits(deposits)
+
+    qr = f"https://api.qrserver.com/v1/create-qr-code/?size=240x240&data={pay_address}"
+    embed = discord.Embed(title="💸 LTC Deposit", color=0xFFD700, description=(
+        f"Send **exactly** the amount below to the address. You'll get **{points:,} points** "
+        f"(${usd:.2f}) once it confirms on-chain.\n\u200b"))
+    embed.add_field(name="Amount to send", value=f"```{pay_amount} LTC```", inline=False)
+    embed.add_field(name="LTC Address",   value=f"```{pay_address}```", inline=False)
+    embed.set_thumbnail(url=qr)
+    embed.set_footer(text="Send only LTC. Points are credited automatically after network confirmation.")
+    try:
+        await ctx.author.send(embed=embed)
+        await notice.edit(content=f"{ctx.author.mention} 📬 Sent your unique LTC deposit address in DMs!")
+    except discord.Forbidden:
+        await notice.edit(content=f"{ctx.author.mention} ❌ I couldn't DM you — enable DMs from server members and try again.")
+
+
+async def deposit_watcher():
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        try:
+            deposits = get_deposits()
+            for payment_id, rec in list(deposits.items()):
+                if rec.get('status') != 'pending':
+                    continue
+                try:
+                    status, data = await nowpayments_request('GET', f'/payment/{payment_id}')
+                except Exception:
+                    continue
+                if status != 200 or not isinstance(data, dict):
+                    continue
+                pay_status = data.get('payment_status')
+                if pay_status in DEPOSIT_PAID_STATES:
+                    await credit_deposit(payment_id, rec)
+                elif pay_status == 'partially_paid':
+                    rec['status'] = 'partial'; deposits[payment_id] = rec; save_deposits(deposits)
+                elif pay_status in DEPOSIT_DEAD_STATES:
+                    rec['status'] = pay_status; deposits[payment_id] = rec; save_deposits(deposits)
+        except Exception:
+            pass
+        await asyncio.sleep(45)
+
+
 @bot.command(name='help')
 async def help_command(ctx):
     embed = discord.Embed(title="🎰  LuckyBet — Commands", color=0x9B59B6)
@@ -2918,6 +3060,7 @@ async def help_command(ctx):
     ), inline=False)
     embed.add_field(name="📊 Info", value=(
         "`.games` — List every game in the bot\n"
+        "`.deposit <usd>` — Get a unique LTC address (DM) to top up points\n"
         "`.balance` / `.bal` — Your balance\n"
         "`.stats [@user]` — Full profile & lifetime stats\n"
         "`.rank` — Full rank progress\n"
