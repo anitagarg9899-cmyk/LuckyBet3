@@ -15,7 +15,7 @@ load_dotenv()
 from datetime import datetime, timezone, timedelta
 from images import (
     balance_card, coinflip_card, dice_card, slots_card,
-    roulette_card, blackjack_card, addbal_card
+    roulette_card, blackjack_card, addbal_card, limbo_card
 )
 
 intents = discord.Intents.default()
@@ -203,6 +203,14 @@ def pf_slots_spin(server_seed, client_seed):
     symbols = ["🍎", "🍊", "🍋", "🍌", "⭐", "💎"]
     return [symbols[int(pf_derive(server_seed, client_seed, i) * 6)] for i in range(3)]
 
+LIMBO_HOUSE_EDGE = 0.01
+
+def pf_limbo(server_seed, client_seed):
+    """Return a crash-style result multiplier (>= 1.00) for Limbo."""
+    r = max(pf_derive(server_seed, client_seed), 1e-9)
+    result = (1.0 - LIMBO_HOUSE_EDGE) / r
+    return max(1.00, round(result, 2))
+
 def pf_blackjack_deck(server_seed, client_seed):
     deck = [2,3,4,5,6,7,8,9,10,10,10,10,11] * 4
     full_bytes = b''
@@ -231,6 +239,7 @@ def pf_add_field(embed, server_seed, client_seed, public_hash, game):
 GAME_EMOJIS = {
     'coinflip': '🪙', 'dice': '🎲', 'slots': '🎰', 'roulette': '🎡',
     'blackjack': '🃏', 'mines': '⛏️', 'crash': '🚀', 'jackpot': '🎰',
+    'limbo': '📈',
 }
 
 async def send_to_history(guild, game, user_name, user_id, bet, won, profit, new_bal):
@@ -955,6 +964,45 @@ async def dice(ctx, amount: str, guess: int):
     asyncio.create_task(send_to_history(ctx.guild, 'dice', ctx.author.name, ctx.author.id, amount, won, amount*5 if won else amount, new_bal))
 
 
+@bot.command(name='limbo')
+async def limbo(ctx, amount: str, target: str = None):
+    bal = get_user_balance(ctx.author.id)
+    if target is None:
+        await ctx.send("❌ Usage: `.limbo <amount> <target>` — e.g. `.limbo 100 2.5`"); return
+    try:
+        target_mult = round(float(target.lower().replace('x', '').strip()), 2)
+    except ValueError:
+        await ctx.send("❌ Invalid target! Provide a multiplier like `2.0` or `10x`."); return
+    if target_mult < 1.01 or target_mult > 1000:
+        await ctx.send("❌ Target multiplier must be between 1.01× and 1000×!"); return
+    amount = resolve_bet(amount, bal)
+    if amount is None: await ctx.send("❌ Invalid amount! Use a number, `all`, or `half`."); return
+    if amount <= 0: await ctx.send("❌ Bet must be positive!"); return
+    if amount > bal: await ctx.send(f"❌ Insufficient balance! You have {fmt(bal)}"); return
+    server_seed, client_seed, public_hash = generate_seeds()
+    result_mult = pf_limbo(server_seed, client_seed)
+    embed = discord.Embed(title="📈  Limbo", description="📈 Climbing...", color=0xFFD700)
+    msg = await ctx.send(embed=embed)
+    for step in (1.00, max(1.00, result_mult * 0.4), max(1.00, result_mult * 0.75)):
+        await asyncio.sleep(0.4); embed.description = f"📈 `{step:.2f}×`  Climbing..."; await msg.edit(embed=embed)
+    await asyncio.sleep(0.3)
+    won = result_mult >= target_mult
+    profit = round(amount * target_mult) - amount if won else amount
+    new_bal = bal + profit if won else bal - amount
+    add_to_stats(ctx.author.id, won, amount); set_user_balance(ctx.author.id, new_bal)
+    if ctx.guild: asyncio.create_task(assign_rank_role(ctx.guild, ctx.author.id))
+    embed = discord.Embed(title=f"🎉 Limbo — WIN! (×{target_mult:g})" if won else "😢 Limbo — LOST", color=0x00FF88 if won else 0xFF4444)
+    embed.add_field(name="Your target", value=f"{target_mult:.2f}×", inline=True)
+    embed.add_field(name="Result",      value=f"{result_mult:.2f}×", inline=True)
+    embed.add_field(name="Change",      value=f"{'+' if won else '-'}R${(profit if won else amount):,}", inline=True)
+    embed.add_field(name="New Balance", value=fmt(new_bal), inline=False)
+    pf_add_field(embed, server_seed, client_seed, public_hash, "limbo")
+    img_buf = limbo_card(ctx.author.name, target_mult, result_mult, won)
+    embed.set_image(url="attachment://limbo.png")
+    await msg.edit(embed=embed, attachments=[send_image(img_buf, 'limbo.png')])
+    asyncio.create_task(send_to_history(ctx.guild, 'limbo', ctx.author.name, ctx.author.id, amount, won, profit if won else amount, new_bal))
+
+
 @bot.command(name='slots')
 async def slots(ctx, amount: str):
     bal = get_user_balance(ctx.author.id)
@@ -1080,6 +1128,7 @@ async def verify(ctx, game: str = None, server_seed: str = None, client_seed: st
             "`.verify dice <server_seed> <client_seed>`\n"
             "`.verify slots <server_seed> <client_seed>`\n"
             "`.verify roulette <server_seed> <client_seed>`\n"
+            "`.verify limbo <server_seed> <client_seed>`\n"
             "`.verify mines <server_seed> <client_seed> <mine_count>`\n\n"
             "The **Server Seed** and **Client Seed** are shown at the bottom of every game result."
         ))
@@ -1109,6 +1158,9 @@ async def verify(ctx, game: str = None, server_seed: str = None, client_seed: st
         else: rc = "red" if spin%2==1 else "black"; parity = "even" if spin%2==0 else "odd"
         ci = "🔴" if rc=="red" else ("⚫" if rc=="black" else "🟢")
         embed.add_field(name="✅ Result", value=f"{ci} **{spin}** ({rc} / {parity})", inline=False)
+    elif game == "limbo":
+        result = pf_limbo(server_seed, client_seed)
+        embed.add_field(name="✅ Result", value=f"**{result:.2f}×** (win if ≥ your target)", inline=False)
     elif game in ("mines", "mine"):
         mine_count = int(extra) if extra and extra.isdigit() else 3
         positions = pf_mine_positions(server_seed, client_seed, mine_count)
@@ -1121,7 +1173,7 @@ async def verify(ctx, game: str = None, server_seed: str = None, client_seed: st
         embed.add_field(name="Draw roll (nonce 1)",  value=f"`{draw_val:.6f}` — used for weighted winner selection", inline=False)
         embed.add_field(name="✅ Outcome", value="**POT FAILED** (no winner)" if failed else f"Winner determined by draw roll `{draw_val:.6f}` against entry weights", inline=False)
     else:
-        embed.add_field(name="❌ Unknown game", value=f"Supported: `coinflip`, `dice`, `slots`, `roulette`, `mines`, `jackpot`", inline=False)
+        embed.add_field(name="❌ Unknown game", value=f"Supported: `coinflip`, `dice`, `slots`, `roulette`, `limbo`, `mines`, `jackpot`", inline=False)
 
     embed.set_footer(text="Hash = SHA-256(server_seed) — you can verify this yourself at any SHA-256 tool.")
     await ctx.send(embed=embed)
@@ -2195,6 +2247,7 @@ async def help_command(ctx):
     embed.add_field(name="🎮 Games", value=(
         "`.coinflip` / `.cf <amt> <h/t>` — Coin flip 1:1\n"
         "`.dice <amt> <1-6>` — Dice guess ×5\n"
+        "`.limbo <amt> <target>` — Beat your target multiplier\n"
         "`.slots <amt>` — Slots up to ×100\n"
         "`.roulette <amt> <r/b/e/o>` — Roulette ×2\n"
         "`.blackjack` / `.bj <amt>` — Hit, Stand, Double\n"

@@ -169,6 +169,24 @@ def dice_card(username, guess, roll, won):
     result_banner(d, W, 272, won, label)
     return to_buf(img)
 
+# Limbo card
+
+def limbo_card(username, target, result, won):
+    W, H = 500, 340
+    img, d = make_card(W, H, "\U0001f4c8  Limbo", f"bet by {username}")
+
+    # big result multiplier in the middle
+    res_color = GREEN if won else RED
+    center_text(d, f"{result:.2f}\u00d7", fnt(64, bold=True), W // 2, 150, res_color)
+    center_text(d, "RESULT MULTIPLIER", fnt(13, bold=True), W // 2, 198, GRAY)
+
+    # target line
+    center_text(d, f"Target  {target:.2f}\u00d7", fnt(20, bold=True), W // 2, 228, GOLD)
+
+    label = f"{result:.2f}x >= {target:.2f}x" if won else f"{result:.2f}x < {target:.2f}x"
+    result_banner(d, W, 272, won, label)
+    return to_buf(img)
+
 # Slots card
 
 SLOT_COLORS = {
