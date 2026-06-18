@@ -1020,6 +1020,131 @@ async def clearhistory_error(ctx, error):
 
 # ── Core Commands ─────────────────────────────────────────────────────────────
 
+@bot.command(name='coinflip', aliases=['cf'])
+async def coinflip(ctx, amount: str, choice: str):
+    bal = get_user_balance(ctx.author.id)
+    choice = choice.lower()
+
+    if choice not in ['heads', 'tails', 'h', 't']:
+        await ctx.send("❌ Choose **heads** or **tails** (or h/t)")
+        return
+
+    amount = resolve_bet(amount, bal)
+
+    if amount is None:
+        await ctx.send("❌ Invalid amount! Use a number, `all`, or `half`.")
+        return
+
+    if amount <= 0:
+        await ctx.send("❌ Bet must be positive!")
+        return
+
+    if amount > bal:
+        await ctx.send(f"❌ Insufficient balance! You have {fmt(bal)}")
+        return
+
+    choice = "heads" if choice == "h" else ("tails" if choice == "t" else choice)
+
+    server_seed, client_seed, public_hash = generate_seeds()
+
+    frames = [
+        "🌀 Flipping...",
+        "🪙 Spinning...",
+        "✨ Almost...",
+        "🎯 Result..."
+    ]
+
+    anim_buf = coinflip_anim_card(ctx.author.name)
+
+    embed = discord.Embed(
+        title="🪙 Coin Flip",
+        description=frames[0],
+        color=0xFFD700
+    )
+
+    embed.set_image(url="attachment://coinflip_anim.png")
+
+    msg = await ctx.send(
+        embed=embed,
+        file=send_image(anim_buf, "coinflip_anim.png")
+    )
+
+    for frame in frames[1:]:
+        await asyncio.sleep(0.45)
+        embed.description = frame
+        await msg.edit(embed=embed)
+
+    await asyncio.sleep(0.35)
+
+    result = pf_coinflip(server_seed, client_seed)
+    won = choice == result
+
+    new_bal = bal + amount if won else bal - amount
+
+    add_to_stats(ctx.author.id, won, amount)
+    set_user_balance(ctx.author.id, new_bal)
+
+    if ctx.guild:
+        asyncio.create_task(assign_rank_role(ctx.guild, ctx.author.id))
+
+    embed = discord.Embed(
+        title="🎉 Coin Flip — YOU WON!" if won else "😢 Coin Flip — YOU LOST",
+        color=0x00FF88 if won else 0xFF4444
+    )
+
+    embed.add_field(
+        name="You chose",
+        value=choice.upper(),
+        inline=True
+    )
+
+    embed.add_field(
+        name="Result",
+        value=result.upper(),
+        inline=True
+    )
+
+    embed.add_field(
+        name="Change",
+        value=f"{'+' if won else '-'}R${amount:,}",
+        inline=True
+    )
+
+    embed.add_field(
+        name="New Balance",
+        value=fmt(new_bal),
+        inline=False
+    )
+
+    pf_add_field(embed, server_seed, client_seed, public_hash, "coinflip")
+
+    img_buf = coinflip_card(
+        ctx.author.name,
+        choice,
+        result,
+        won
+    )
+
+    embed.set_image(url="attachment://coinflip.png")
+
+    await msg.edit(
+        embed=embed,
+        attachments=[send_image(img_buf, "coinflip.png")]
+    )
+
+    asyncio.create_task(
+        send_to_history(
+            ctx.guild,
+            'coinflip',
+            ctx.author.name,
+            ctx.author.id,
+            amount,
+            won,
+            amount,
+            new_bal
+        )
+    )
+
 @bot.command(name='balance', aliases=['bal', 'b'])
 async def balance(ctx, member: discord.Member = None):
     target = member or ctx.author
@@ -1032,47 +1157,6 @@ async def balance(ctx, member: discord.Member = None):
     await ctx.send(embed=embed, file=send_image(img_buf, 'balance.png'))
 
 
-@bot.command(name='coinflip', aliases=['cf'])
-async def coinflip(ctx, amount: str, choice: str):
-    bal = get_user_balance(ctx.author.id); choice = choice.lower()
-    if choice not in ['heads','tails','h','t']: await ctx.send("❌ Choose **heads** or **tails** (or h/t)"); return
-    amount = resolve_bet(amount, bal)
-    if amount is None: await ctx.send("❌ Invalid amount! Use a number, `all`, or `half`."); return
-    if amount <= 0: await ctx.send("❌ Bet must be positive!"); return
-    if amount > bal: await ctx.send(f"❌ Insufficient balance! You have {fmt(bal)}"); return
-    choice = 'heads' if choice == 'h' else ('tails' if choice == 't' else choice)
-    server_seed, client_seed, public_hash = generate_seeds()
-    frames = ["🌀 Flipping...","🪙 Spinning...","✨ Almost...","🎯 Result..."]
-    anim_buf = coinflip_anim_card(ctx.author.name)
-
-embed = discord.Embed(
-    title="🪙 Coin Flip",
-    color=0xFFD700
-)
-
-embed.set_image(url="attachment://coinflip_anim.png")
-
-msg = await ctx.send(
-    embed=embed,
-    file=send_image(anim_buf, "coinflip_anim.png")
-)
-    for frame in frames[1:]:
-        await asyncio.sleep(0.45); embed.description = frame; await msg.edit(embed=embed)
-    await asyncio.sleep(0.35)
-    result = pf_coinflip(server_seed, client_seed); won = choice == result
-    new_bal = bal + amount if won else bal - amount
-    add_to_stats(ctx.author.id, won, amount); set_user_balance(ctx.author.id, new_bal)
-    if ctx.guild: asyncio.create_task(assign_rank_role(ctx.guild, ctx.author.id))
-    embed = discord.Embed(title="🎉 Coin Flip — YOU WON!" if won else "😢 Coin Flip — YOU LOST", color=0x00FF88 if won else 0xFF4444)
-    embed.add_field(name="You chose", value=choice.upper(), inline=True)
-    embed.add_field(name="Result",    value=result.upper(), inline=True)
-    embed.add_field(name="Change",    value=f"{'+'if won else '-'}R${amount:,}", inline=True)
-    embed.add_field(name="New Balance", value=fmt(new_bal), inline=False)
-    pf_add_field(embed, server_seed, client_seed, public_hash, "coinflip")
-    img_buf = coinflip_card(ctx.author.name, choice, result, won)
-    embed.set_image(url="attachment://coinflip.png")
-    await msg.edit(embed=embed, attachments=[send_image(img_buf, 'coinflip.png')])
-    asyncio.create_task(send_to_history(ctx.guild, 'coinflip', ctx.author.name, ctx.author.id, amount, won, amount if won else amount, new_bal))
 
 
 @bot.command(name='dice')
