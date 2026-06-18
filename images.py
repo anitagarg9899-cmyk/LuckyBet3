@@ -115,7 +115,36 @@ def result_banner(d, W, y, won, text):
     center_text(d, text, fnt(22, bold=True), W // 2, y + 23, color)
 
 # Coin flip card
+def coinflip_anim_card(username):
+    W, H = 500, 340
+    img, d = make_card(W, H, "🪙 Coin Flip", f"bet by {username}")
 
+    cx, cy = W // 2, 180
+
+    d.ellipse(
+        [cx - 70, cy - 70, cx + 70, cy + 70],
+        fill=GOLD
+    )
+
+    center_text(
+        d,
+        "FLIP",
+        fnt(40, bold=True),
+        cx,
+        cy - 5,
+        DGOLD
+    )
+
+    center_text(
+        d,
+        "Flipping...",
+        fnt(24),
+        cx,
+        285,
+        (255, 255, 255)
+    )
+
+    return to_buf(img)
 def coinflip_card(username, choice, result, won):
     W, H = 500, 340
     img, d = make_card(W, H, "\U0001fa99  Coin Flip", f"bet by {username}")
