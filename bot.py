@@ -1043,8 +1043,19 @@ async def coinflip(ctx, amount: str, choice: str):
     choice = 'heads' if choice == 'h' else ('tails' if choice == 't' else choice)
     server_seed, client_seed, public_hash = generate_seeds()
     frames = ["🌀 Flipping...","🪙 Spinning...","✨ Almost...","🎯 Result..."]
-    embed = discord.Embed(title="🪙  Coin Flip", description=frames[0], color=0xFFD700)
-    msg = await ctx.send(embed=embed)
+    anim_buf = coinflip_anim_card(ctx.author.name)
+
+embed = discord.Embed(
+    title="🪙 Coin Flip",
+    color=0xFFD700
+)
+
+embed.set_image(url="attachment://coinflip_anim.png")
+
+msg = await ctx.send(
+    embed=embed,
+    file=send_image(anim_buf, "coinflip_anim.png")
+)
     for frame in frames[1:]:
         await asyncio.sleep(0.45); embed.description = frame; await msg.edit(embed=embed)
     await asyncio.sleep(0.35)
