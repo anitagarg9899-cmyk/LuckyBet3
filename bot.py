@@ -48,6 +48,8 @@ DEPOSIT_MIN_USD      = 1.0
 # NOWPayments statuses that mean money fully arrived
 DEPOSIT_PAID_STATES  = {'finished', 'confirmed', 'sending'}
 DEPOSIT_DEAD_STATES  = {'failed', 'refunded', 'expired'}
+WITHDRAW_CHANNEL_ID = 1517385238488023061
+MIN_WITHDRAW = 500
 
 def usd_to_points(usd):
     return int(round(usd / POINTS_TO_USD))
