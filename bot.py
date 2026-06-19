@@ -3185,6 +3185,67 @@ async def deposit_watcher():
             pass
         await asyncio.sleep(45)
 
+@bot.command(name="withdraw")
+async def withdraw(ctx, amount: int = None, ltc_address: str = None):
+
+    if amount is None or ltc_address is None:
+        await ctx.send("❌ Usage: `.withdraw <points> <ltc_address>`")
+        return
+
+    if amount < MIN_WITHDRAW:
+        await ctx.send(
+            f"❌ Minimum withdrawal is **{MIN_WITHDRAW:,} points**."
+        )
+        return
+
+    bal = get_user_balance(ctx.author.id)
+
+    if bal < amount:
+        await ctx.send(
+            f"❌ You only have **{bal:,} points**."
+        )
+        return
+
+    usd_value = amount * POINTS_TO_USD
+
+    embed = discord.Embed(
+        title="🏦 Withdrawal Request",
+        color=0xFFD700
+    )
+
+    embed.add_field(
+        name="User",
+        value=f"{ctx.author} ({ctx.author.id})",
+        inline=False
+    )
+
+    embed.add_field(
+        name="Amount",
+        value=f"{amount:,} points",
+        inline=True
+    )
+
+    embed.add_field(
+        name="USD Value",
+        value=f"${usd_value:.2f}",
+        inline=True
+    )
+
+    embed.add_field(
+        name="LTC Address",
+        value=f"```{ltc_address}```",
+        inline=False
+    )
+
+    channel = bot.get_channel(WITHDRAW_CHANNEL_ID)
+
+    if channel:
+        await channel.send(embed=embed)
+
+    await ctx.send(
+        "✅ Withdrawal request submitted.\n"
+        "An administrator will process it shortly."
+    )
 
 @bot.command(name='help')
 async def help_command(ctx):
