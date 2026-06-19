@@ -3242,9 +3242,7 @@ async def help_command(ctx):
         "`.blackjack` / `.bj <amt>` — Hit, Stand, Double\n"
         "`.mines <amt> [mines]` — Provably fair mines\n"
         "`.crash <amt>` — Multiplayer crash game\n"
-        "`.jackpot` / `.jp <amt>` — Weighted jackpot pool"
-    ), inline=False)
-    embed.add_field(name="🎮 More Games", value=(
+        "`.jackpot` / `.jp <amt>` — Weighted jackpot pool". 
         "✂️ `.rps <amt> <r/p/s>` — Rock-Paper-Scissors vs the bot\n"
         "🎢 `.slide <amt> <target>` — Slider; win if it lands ≥ your pick\n"
         "#️⃣ `.ttt @user` — Tic Tac Toe against another user\n"
