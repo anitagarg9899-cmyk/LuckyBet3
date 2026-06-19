@@ -3004,6 +3004,27 @@ async def stats_error(ctx, error):
     if isinstance(error, commands.MemberNotFound): await ctx.send("❌ Member not found — mention them with @")
     else: await ctx.send("❌ Usage: `.stats` or `.stats @user`")
 
+@bot.command(name="housebal")
+async def housebal(ctx):
+
+    data = load_data()
+
+    total = 0
+
+    for uid, user in data.items():
+
+        if uid.startswith("__"):
+            continue
+
+        total += user.get("balance", 0)
+
+    embed = discord.Embed(
+        title="🏦 LuckyBet House Balance",
+        description=f"Total player balances:\n\n**{total:,} points**",
+        color=0x00BFFF
+    )
+
+    await ctx.send(embed=embed)
 
 GAMES_CATALOG = [
     ("🪙", ".coinflip / .cf <amt> <h/t>", "Coin flip, 1:1 payout"),
